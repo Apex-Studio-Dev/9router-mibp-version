@@ -12,18 +12,78 @@ concurrency:
 
 env:
   GHCR_IMAGE: ghcr.io/apex-studio-dev/9router-mibp-version
-  DOCKERHUB_IMAGE: apex-studio-dev/9router-mibp-version
+  DOCKERHUB_IMAGE: skyyhinohara/9router-mibp-version
 
 jobs:
-  build-and-push:
+  build-amd64:
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
-
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
+      - uses: docker/setup-buildx-action@f7ce87c1d6bead3e36075b2ce75da1f6cc28aaca # v3.9.0
+
+      - name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push (by digest)
+        id: build
+        uses: docker/build-push-action@4f58ea79222b3b9dc2c8bbdd6debcef730109a75 # v6.9.0
+        with:
+          context: .
+          platforms: linux/amd64
+          outputs: type=image,name=${{ env.GHCR_IMAGE }},push=true,name-canonical=true,push-by-digest=true
+          cache-from: type=registry,ref=${{ env.GHCR_IMAGE }}:buildcache-amd64
+          cache-to: type=registry,ref=${{ env.GHCR_IMAGE }}:buildcache-amd64,mode=max
+          provenance: false
+          sbom: false
+
+  build-arm64:
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: docker/setup-buildx-action@f7ce87c1d6bead3e36075b2ce75da1f6cc28aaca # v3.9.0
+
+      - name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push (by digest)
+        id: build
+        uses: docker/build-push-action@4f58ea79222b3b9dc2c8bbdd6debcef730109a75 # v6.9.0
+        with:
+          context: .
+          platforms: linux/arm64
+          outputs: type=image,name=${{ env.GHCR_IMAGE }},push=true,name-canonical=true,push-by-digest=true
+          cache-from: type=registry,ref=${{ env.GHCR_IMAGE }}:buildcache-arm64
+          cache-to: type=registry,ref=${{ env.GHCR_IMAGE }}:buildcache-arm64,mode=max
+          provenance: false
+          sbom: false
+
+  merge:
+    needs: [build-amd64, build-arm64]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
       - uses: docker/setup-buildx-action@f7ce87c1d6bead3e36075b2ce75da1f6cc28aaca # v3.9.0
 
       - name: Log in to GHCR
@@ -39,7 +99,7 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Extract metadata
+      - name: Extract metadata (tags)
         id: meta
         uses: docker/metadata-action@318604b99e75e41977312d83839a89be02ca4893 # v5.9.0
         with:
@@ -50,15 +110,13 @@ jobs:
             type=semver,pattern={{version}}
             type=raw,value=latest,enable={{is_default_branch}}
 
-      - name: Build and push
-        uses: docker/build-push-action@4f58ea79222b3b9dc2c8bbdd6debcef730109a75 # v6.9.0
-        with:
-          context: .
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=registry,ref=${{ env.GHCR_IMAGE }}:buildcache
-          cache-to: type=registry,ref=${{ env.GHCR_IMAGE }}:buildcache,mode=max
-          platforms: linux/amd64 # ponytail: arm64 via QEMU hang di npm ci (native build); kalau perlu arm64 pakai runner native ubuntu-24.04-arm + manifest merge
-          provenance: false
-          sbom: false
+      - name: Create manifest list and push
+        run: |
+          set -eux
+          args=()
+          while IFS= read -r t; do
+            args+=("--tag" "$t")
+          done <<< "${{ steps.meta.outputs.tags }}"
+          docker buildx imagetools create "${args[@]}" \
+            "${{ env.GHCR_IMAGE }}@${{ needs.build-amd64.outputs.digest }}" \
+            "${{ env.GHCR_IMAGE }}@${{ needs.build-arm64.outputs.digest }}"
