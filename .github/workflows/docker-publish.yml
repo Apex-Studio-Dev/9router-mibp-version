@@ -11,7 +11,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  GHCR_IMAGE: ghcr.io/${{ github.repository }}
+  GHCR_IMAGE: ghcr.io/apex-studio-dev/9router-mibp-version
   DOCKERHUB_IMAGE: apex-studio-dev/9router-mibp-version
 
 jobs:
